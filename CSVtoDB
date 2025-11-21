@@ -1,0 +1,157 @@
+#!/usr/bin/python3
+import sqlite3, csv, sys, argparse, pandas
+import re
+
+# Affichier l'utilisation du script
+desc = "Script pour convertir fichier CSV Produit par DFIR-ORC vers Sqlite3\npar : Sivanesan"
+# Création de parser avec la variable utilisation
+parser = argparse.ArgumentParser(description=desc)
+parser.add_argument("-c", "--csv", help="Fichier CSV obtenue a partir du script macs_timeline.sh", required=True)
+parser.add_argument("-s", "--sqlite", help="Fichier Sqlite3 a créer", required=True)
+
+# On récupère les arguments
+args = parser.parse_args()
+
+# Function to convert Excel column letter to number (A=1, B=2, ..., Z=26, AA=27, etc.)
+def column_letter_to_number(column_letter):
+    result = 0
+    for char in column_letter.upper():
+        result = result * 26 + (ord(char) - ord('A') + 1)
+    return result
+
+# Function to parse Excel-style cell range (e.g., "C3:Q3")
+def parse_cell_range(cell_range):
+    # Pattern to match cell range like "C3:Q3" or "A1:Z1"
+    pattern = r'^([A-Z]+)(\d+):([A-Z]+)(\d+)$'
+    match = re.match(pattern, cell_range.upper())
+    
+    if not match:
+        raise ValueError(f"Format de plage invalide: {cell_range}")
+    
+    start_col, start_row, end_col, end_row = match.groups()
+    start_row = int(start_row)
+    end_row = int(end_row)
+    
+    # For header row, we expect the same row number
+    if start_row != end_row:
+        print(f"[!] Attention: Les lignes de début et fin sont différentes. Utilisation de la ligne {start_row}.")
+    
+    start_col_num = column_letter_to_number(start_col)
+    end_col_num = column_letter_to_number(end_col)
+    
+    return start_col_num, end_col_num, start_row
+
+# Function to get available columns from CSV
+def get_available_columns(csv_file):
+    with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        return header
+
+# Function to get columns from cell range
+def get_columns_from_range(csv_file, cell_range):
+    # Parse the cell range
+    start_col_num, end_col_num, header_row = parse_cell_range(cell_range)
+    
+    # Read the CSV to find the header row
+    with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
+        reader = csv.reader(f)
+        
+        # Skip rows until we reach the header row
+        for i in range(header_row - 1):
+            next(reader, None)
+        
+        # Read the header row
+        header = next(reader)
+    
+    # Adjust for 0-based indexing
+    start_idx = start_col_num - 1
+    end_idx = end_col_num
+    
+    # Validate indices
+    if start_idx < 0 or end_idx > len(header) or start_idx >= end_idx:
+        raise ValueError(f"Plage de colonnes invalide. Le CSV a {len(header)} colonnes.")
+    
+    selected_columns = header[start_idx:end_idx]
+    return selected_columns, start_idx, end_idx
+
+# Get available columns from CSV to show user
+print('[*] Lecture des colonnes disponibles...')
+available_columns = get_available_columns(args.csv)
+
+print(f"\n[*] Le fichier CSV contient {len(available_columns)} colonnes:")
+for i, col in enumerate(available_columns, 1):
+    col_letter = ""
+    n = i
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        col_letter = chr(65 + remainder) + col_letter
+    print(f"  {col_letter}1: {col}")
+
+# Ask user for cell range
+print("\nEntrez la plage de cellules pour les colonnes à importer (ex: C3:Q3):")
+cell_range = input("Plage: ").strip()
+
+if not cell_range:
+    print("Aucune plage spécifiée. Utilisation de toutes les colonnes.")
+    selected_columns = available_columns
+    start_idx = 0
+    end_idx = len(available_columns)
+else:
+    try:
+        selected_columns, start_idx, end_idx = get_columns_from_range(args.csv, cell_range)
+        print(f"\n[*] Colonnes sélectionnées ({len(selected_columns)} colonnes):")
+        for i, col in enumerate(selected_columns, start_idx + 1):
+            col_letter = ""
+            n = i
+            while n > 0:
+                n, remainder = divmod(n - 1, 26)
+                col_letter = chr(65 + remainder) + col_letter
+            print(f"  {col_letter}1: {col}")
+    except Exception as e:
+        print(f"[!] Erreur: {e}")
+        print("Utilisation de toutes les colonnes.")
+        selected_columns = available_columns
+        start_idx = 0
+        end_idx = len(available_columns)
+
+# Create database connection
+connection = sqlite3.connect(args.sqlite)
+cursor = connection.cursor()
+
+# Create table with selected columns
+columns_def = ', '.join([f'"{col}" text' for col in selected_columns]) + ', ID INTEGER PRIMARY KEY AUTOINCREMENT'
+cursor.execute(f'create table timeline ({columns_def})')
+
+# Import data from CSV and populate the "timeline" table
+print('\n[*] Début du traitement du fichier CSV.')
+try:
+    # Use column indices for pandas
+    with open(args.csv, 'r', encoding='utf-8', errors='ignore') as fic:
+        lecteur = pandas.read_csv(fic, header=0, delimiter=',', usecols=range(start_idx, end_idx), low_memory=False)
+        
+        # Replace NaN values with empty strings
+        lecteur = lecteur.fillna('')
+        
+        lecteur.to_sql('timeline', connection, if_exists='replace', index=False)
+    
+    print('[*] Fin du traitement du fichier CSV.')
+    
+    # Validate changes
+    connection.commit()
+    
+    # Show some statistics
+    cursor.execute("SELECT COUNT(*) FROM timeline")
+    count = cursor.fetchone()[0]
+    print(f"\n[*] Import terminé avec succès!")
+    print(f"[*] Nombre total d'enregistrements: {count}")
+    print(f"[*] Colonnes importées: {len(selected_columns)}")
+    print(f"[*] Base de données sauvegardée dans: {args.sqlite}")
+
+except Exception as e:
+    print(f"[!] Erreur lors du traitement: {e}")
+    connection.rollback()
+
+finally:
+    # Close database
+    connection.close()
