@@ -3,7 +3,7 @@ import sqlite3, csv, sys, argparse, pandas
 import re
 
 # Affichier l'utilisation du script
-desc = "Script pour convertir fichier CSV Produit par DFIR-ORC vers Sqlite3\npar : Sivanesan"
+desc = "Script pour convertir fichier CSV Produit par DFIR-ORC vers Sqlite3\npar :"
 # Création de parser avec la variable utilisation
 parser = argparse.ArgumentParser(description=desc)
 parser.add_argument("-c", "--csv", help="Fichier CSV obtenue a partir du script macs_timeline.sh", required=True)
