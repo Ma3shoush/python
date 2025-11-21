@@ -1,0 +1,50 @@
+#!/usr/bin/python3
+import socket, binascii, struct
+
+def ethernet(pkt):
+    enteteEth = pkt[0:14] #14 octets
+    #analyse
+    dmac = enteteEth[0:6]
+    dmac = binascii.hexlify(dmac,sep=':').decode()
+    smac = enteteEth[6:12]
+    smac = binascii.hexlify(smac,sep=':').decode()
+    type = enteteEth[12:]
+    type = binascii.hexlify(type).decode()
+
+    return dmac,smac,type
+
+def ipv4(pkt):
+    enteteIP = pkt[14:14+20] #20 octets
+    ttl = enteteIP[8]
+    protocol = enteteIP[9]
+    ip_src = socket.inet_ntoa(enteteIP[12:12+4])
+    ip_dst = socket.inet_ntoa(enteteIP[12+4:])
+
+    return ttl,protocol,ip_src,ip_dst
+    
+def TCP(pkt):
+    port_src = pkt[34:36]
+    port_src = struct.unpack("!H",pkt[34:36])[0]
+    port_dst = pkt[36:38]
+    port_dst = struct.unpack("!H",pkt[36:38])[0]
+
+    return port_src,port_dst
+
+
+while True:
+    #Capture traffic 0x0003 = ALL traffic
+    capture = socket.socket(socket.PF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+    pkt = capture.recvfrom(2048)[0] #l'index 0 c'est le paquet capturer le reste ce sont des métadonnées
+    print("Paquet capturé!")
+    result_eth = ethernet(pkt)
+    if result_eth[-1] == "0800" :
+        result_ipv4 = ipv4(pkt)
+        if result_ipv4[1] == 6 :
+            result_tcp = TCP(pkt)
+            if 80 in result_tcp:
+                print(f"Ethernet:\nMac dst : {result_eth[0]}\nMac src: {result_eth[1]}\nType: {result_eth[2]}")
+                print(f"Ipv4:\nIP src: {result_ipv4[2]}\nIP dst: {result_ipv4[-1]}\nTTL: {result_ipv4[0]}\nProtocol: {result_ipv4[1]}")
+                print(f"Port SRC: {result_tcp[0]}\nPort DST: {result_tcp[1]}")
+                print("HTTP:")
+                print(pkt[54:])
+ 
