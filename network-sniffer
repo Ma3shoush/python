@@ -1,0 +1,252 @@
+#!/usr/bin/python3
+import socket, binascii, struct
+import datetime
+import argparse
+
+def ethernet(pkt):
+    enteteEth = pkt[0:14]  # 14 octets
+    # analyse
+    dmac = enteteEth[0:6]
+    dmac = binascii.hexlify(dmac, sep=':').decode()
+    smac = enteteEth[6:12]
+    smac = binascii.hexlify(smac, sep=':').decode()
+    type = enteteEth[12:]
+    type = binascii.hexlify(type).decode()
+
+    return dmac, smac, type
+
+def ipv4(pkt):
+    enteteIP = pkt[14:14+20]  # 20 octets
+    ttl = enteteIP[8]
+    protocol = enteteIP[9]
+    ip_src = socket.inet_ntoa(enteteIP[12:12+4])
+    ip_dst = socket.inet_ntoa(enteteIP[12+4:])
+
+    return ttl, protocol, ip_src, ip_dst
+
+def TCP(pkt):
+    port_src = struct.unpack("!H", pkt[34:36])[0]
+    port_dst = struct.unpack("!H", pkt[36:38])[0]
+    return port_src, port_dst
+
+def UDP(pkt):
+    port_src = struct.unpack("!H", pkt[34:36])[0]
+    port_dst = struct.unpack("!H", pkt[36:38])[0]
+    return port_src, port_dst
+
+def ICMP(pkt):
+    # ICMP type and code are at positions 34 and 35
+    icmp_type = pkt[34]
+    icmp_code = pkt[35]
+    return icmp_type, icmp_code
+
+def write_pcap_header(file):
+    """Write PCAP file header"""
+    magic_number = 0xa1b2c3d4
+    version_major = 2
+    version_minor = 4
+    thiszone = 0
+    sigfigs = 0
+    snaplen = 65535
+    network = 1  # Ethernet
+
+    file.write(struct.pack('I', magic_number))
+    file.write(struct.pack('H', version_major))
+    file.write(struct.pack('H', version_minor))
+    file.write(struct.pack('i', thiszone))
+    file.write(struct.pack('I', sigfigs))
+    file.write(struct.pack('I', snaplen))
+    file.write(struct.pack('I', network))
+
+def write_packet(file, packet_data):
+    """Write individual packet to PCAP file"""
+    timestamp = datetime.datetime.now()
+    ts_sec = int(timestamp.timestamp())
+    ts_usec = timestamp.microsecond
+    
+    # Write packet header
+    file.write(struct.pack('I', ts_sec))
+    file.write(struct.pack('I', ts_usec))
+    file.write(struct.pack('I', len(packet_data)))
+    file.write(struct.pack('I', len(packet_data)))
+    
+    # Write packet data
+    file.write(packet_data)
+
+def get_protocol_choice():
+    """Get user input for protocol selection"""
+    print("\n=== Protocol Selection ===")
+    print("1. HTTP (port 80)")
+    print("2. HTTPS (port 443)")
+    print("3. TCP (all ports)")
+    print("4. UDP (all ports)")
+    print("5. ICMP")
+    print("6. All protocols")
+    print("7. Custom port")
+    
+    while True:
+        try:
+            choice = input("\nSelect protocol (1-7): ").strip()
+            if choice == '1':
+                return 'http'
+            elif choice == '2':
+                return 'https'
+            elif choice == '3':
+                return 'tcp'
+            elif choice == '4':
+                return 'udp'
+            elif choice == '5':
+                return 'icmp'
+            elif choice == '6':
+                return 'all'
+            elif choice == '7':
+                port = input("Enter custom port number: ").strip()
+                return f'custom:{port}'
+            else:
+                print("Invalid choice. Please select 1-7.")
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            exit(0)
+
+def should_capture_packet(protocol_choice, result_eth, result_ipv4, result_transport=None, port_info=None):
+    """Determine if packet should be captured based on user selection"""
+    if result_eth[-1] != "0800":  # Not IPv4
+        return False
+    
+    ip_protocol = result_ipv4[1]
+    
+    if protocol_choice == 'all':
+        return True
+    elif protocol_choice == 'http':
+        return ip_protocol == 6 and port_info and (port_info[0] == 80 or port_info[1] == 80)
+    elif protocol_choice == 'https':
+        return ip_protocol == 6 and port_info and (port_info[0] == 443 or port_info[1] == 443)
+    elif protocol_choice == 'tcp':
+        return ip_protocol == 6
+    elif protocol_choice == 'udp':
+        return ip_protocol == 17
+    elif protocol_choice == 'icmp':
+        return ip_protocol == 1
+    elif protocol_choice.startswith('custom:'):
+        custom_port = int(protocol_choice.split(':')[1])
+        return port_info and (port_info[0] == custom_port or port_info[1] == custom_port)
+    
+    return False
+
+def display_packet_info(pkt, result_eth, result_ipv4, result_transport, protocol_name):
+    """Display packet information"""
+    print(f"\n=== {protocol_name.upper()} Packet Captured ===")
+    print(f"Ethernet:")
+    print(f"  Mac dst: {result_eth[0]}")
+    print(f"  Mac src: {result_eth[1]}")
+    print(f"  Type: {result_eth[2]}")
+    print(f"IPv4:")
+    print(f"  IP src: {result_ipv4[2]}")
+    print(f"  IP dst: {result_ipv4[3]}")
+    print(f"  TTL: {result_ipv4[0]}")
+    print(f"  Protocol: {result_ipv4[1]}")
+    
+    if result_transport:
+        if protocol_name in ['http', 'https', 'tcp']:
+            print(f"TCP:")
+            print(f"  Port SRC: {result_transport[0]}")
+            print(f"  Port DST: {result_transport[1]}")
+        elif protocol_name == 'udp':
+            print(f"UDP:")
+            print(f"  Port SRC: {result_transport[0]}")
+            print(f"  Port DST: {result_transport[1]}")
+        elif protocol_name == 'icmp':
+            print(f"ICMP:")
+            print(f"  Type: {result_transport[0]}")
+            print(f"  Code: {result_transport[1]}")
+    
+    # Only show application data for HTTP/HTTPS and if packet is long enough
+    if protocol_name in ['http', 'https'] and len(pkt) > 54:
+        print("Application Data:")
+        try:
+            # Try to decode as UTF-8, fallback to hex if it fails
+            app_data = pkt[54:]
+            try:
+                decoded_data = app_data.decode('utf-8', errors='ignore')
+                # Only print if there's readable content
+                if any(c.isprintable() for c in decoded_data):
+                    print(decoded_data[:200])  # Limit output to first 200 chars
+            except:
+                print(binascii.hexlify(app_data[:100]).decode())  # First 100 bytes as hex
+        except Exception as e:
+            print(f"Error displaying application data: {e}")
+
+def main():
+    # Get user protocol choice
+    protocol_choice = get_protocol_choice()
+    
+    # Get output filename
+    output_file = input("Enter output filename (without extension): ").strip()
+    if not output_file:
+        output_file = f"capture_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    pcap_file = f"{output_file}.pcap"
+    
+    print(f"\nStarting capture for: {protocol_choice}")
+    print(f"Output file: {pcap_file}")
+    print("Press Ctrl+C to stop capture\n")
+    
+    packet_count = 0
+    
+    try:
+        with open(pcap_file, 'wb') as f:
+            # Write PCAP header
+            write_pcap_header(f)
+            
+            # Create raw socket
+            capture = socket.socket(socket.PF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
+            
+            while True:
+                pkt = capture.recvfrom(2048)[0]
+                
+                result_eth = ethernet(pkt)
+                if result_eth[-1] == "0800":  # IPv4
+                    result_ipv4 = ipv4(pkt)
+                    ip_protocol = result_ipv4[1]
+                    
+                    result_transport = None
+                    port_info = None
+                    protocol_name = ""
+                    
+                    # Parse transport layer based on IP protocol
+                    if ip_protocol == 6:  # TCP
+                        result_transport = TCP(pkt)
+                        port_info = result_transport
+                        protocol_name = 'tcp'
+                        if result_transport[0] == 80 or result_transport[1] == 80:
+                            protocol_name = 'http'
+                        elif result_transport[0] == 443 or result_transport[1] == 443:
+                            protocol_name = 'https'
+                    elif ip_protocol == 17:  # UDP
+                        result_transport = UDP(pkt)
+                        port_info = result_transport
+                        protocol_name = 'udp'
+                    elif ip_protocol == 1:  # ICMP
+                        result_transport = ICMP(pkt)
+                        protocol_name = 'icmp'
+                    
+                    # Check if we should capture this packet
+                    if should_capture_packet(protocol_choice, result_eth, result_ipv4, result_transport, port_info):
+                        # Write to PCAP file
+                        write_packet(f, pkt)
+                        packet_count += 1
+                        
+                        # Display packet info - PASS pkt as parameter
+                        display_packet_info(pkt, result_eth, result_ipv4, result_transport, protocol_name)
+                        print(f"Total packets captured: {packet_count}\n")
+                        
+    except KeyboardInterrupt:
+        print(f"\nCapture stopped. Total packets captured: {packet_count}")
+        print(f"PCAP file saved as: {pcap_file}")
+    except PermissionError:
+        print("Error: Permission denied. Run with sudo!")
+    except Exception as e:
+        print(f"Error: {e}")
+
+if __name__ == "__main__":
+    main()
