@@ -1,0 +1,77 @@
+#!/bin/bash
+# Script optimisé pour extraire les heures MACC d'une image ext4
+# Optimisations : traitement par batch, cache istat, parallélisation
+
+usage() {
+    echo "utilisation: $0 <répertoire de départ> <image disque> <sector offset> [nombre de processus parallèles]"
+    echo "Script optimisé pour obtenir les temps MACC à partir d'une image et générer un fichier CSV"
+    echo "Paramètre optionnel: nombre de processus parallèles (défaut: 4)"
+    exit 1
+}
+
+if [ $# -lt 3 ]; then 
+    usage
+fi
+
+TZ='Europe/Paris'
+disque=$2
+offset=$3
+nb_parallel=${4:-4}  # 4 processus par défaut
+olddir=$(pwd)
+temp_dir=$(mktemp -d)
+
+# Fonction pour traiter un lot d'inodes
+process_batch() {
+    local batch_file=$1
+    local output_file=$2
+    
+    while IFS=';' read -r mod_date mod_time acc_date acc_time chg_date chg_time perm uid gid size filename inode; do
+        # Appel unique à istat avec gestion d'erreur simplifiée
+        istat_line=$(istat -o $offset $disque $inode -z Europe/Paris 2>/dev/null | grep "File Created" | awk '{print $3 ";" $4}')
+        
+        if [ -z "$istat_line" ]; then
+            istat_line="N/A;N/A"
+        fi
+        
+        printf "%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s;%s\n" \
+            "$mod_date" "$mod_time" "$acc_date" "$acc_time" "$chg_date" "$chg_time" \
+            "$istat_line" "$perm" "$uid" "$gid" "$size" "$filename" "$inode"
+    done < "$batch_file" > "$output_file"
+}
+
+export -f process_batch
+export disque offset TZ
+
+cd "$1"
+
+# En-tête CSV
+printf "Modify Date;Modify Time;Access Date;Access Time;Change Date;Change Time;Create Date;Create Time;Permissions;User ID;Group ID;File Size;Filename;Inode\n"
+
+# Génération de la liste complète des fichiers
+find ./ -printf "%TY-%Tm-%Td;%TT;%AY-%Am-%Ad;%AT;%CY-%Cm-%Cd;%CT;%m;%U;%G;%s;%p;%i\n" > "$temp_dir/all_files.txt"
+
+# Division en lots pour traitement parallèle
+total_lines=$(wc -l < "$temp_dir/all_files.txt")
+lines_per_batch=$((total_lines / nb_parallel + 1))
+
+split -l $lines_per_batch "$temp_dir/all_files.txt" "$temp_dir/batch_"
+
+# Traitement parallèle
+batch_files=("$temp_dir"/batch_*)
+for i in "${!batch_files[@]}"; do
+    process_batch "${batch_files[$i]}" "$temp_dir/output_$i.csv" &
+    
+    # Limitation du nombre de processus simultanés
+    if [ $(( (i + 1) % nb_parallel )) -eq 0 ]; then
+        wait
+    fi
+done
+
+wait  # Attendre tous les processus restants
+
+# Fusion des résultats
+cat "$temp_dir"/output_*.csv
+
+# Nettoyage
+rm -rf "$temp_dir"
+cd "$olddir"
