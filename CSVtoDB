@@ -3,10 +3,11 @@ import sqlite3, csv, sys, argparse, pandas
 import re
 
 # Affichier l'utilisation du script
-desc = "Script pour convertir fichier CSV Produit par DFIR-ORC vers Sqlite3\npar :"
+desc = "Script pour convertir fichier CSV Produit par DFIR-ORC vers Sqlite3\npar : Sivanesan"
 # Création de parser avec la variable utilisation
 parser = argparse.ArgumentParser(description=desc)
 parser.add_argument("-c", "--csv", help="Fichier CSV obtenue a partir du script macs_timeline.sh", required=True)
+parser.add_argument("-d", "--delim", help="Délimiteur dans le fichier CSV pour les colonnes", default=',')
 parser.add_argument("-s", "--sqlite", help="Fichier Sqlite3 a créer", required=True)
 
 # On récupère les arguments
@@ -44,7 +45,7 @@ def parse_cell_range(cell_range):
 # Function to get available columns from CSV
 def get_available_columns(csv_file):
     with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
-        reader = csv.reader(f)
+        reader = csv.reader(f,delimiter=args.delim)
         header = next(reader)
         return header
 
@@ -55,7 +56,7 @@ def get_columns_from_range(csv_file, cell_range):
     
     # Read the CSV to find the header row
     with open(csv_file, 'r', encoding='utf-8', errors='ignore') as f:
-        reader = csv.reader(f)
+        reader = csv.reader(f,delimiter=args.delim)
         
         # Skip rows until we reach the header row
         for i in range(header_row - 1):
@@ -128,7 +129,7 @@ print('\n[*] Début du traitement du fichier CSV.')
 try:
     # Use column indices for pandas
     with open(args.csv, 'r', encoding='utf-8', errors='ignore') as fic:
-        lecteur = pandas.read_csv(fic, header=0, delimiter=',', usecols=range(start_idx, end_idx), low_memory=False)
+        lecteur = pandas.read_csv(fic, header=0, delimiter=args.delim, usecols=range(start_idx, end_idx), low_memory=False)
         
         # Replace NaN values with empty strings
         lecteur = lecteur.fillna('')
@@ -155,3 +156,4 @@ except Exception as e:
 finally:
     # Close database
     connection.close()
+ 
